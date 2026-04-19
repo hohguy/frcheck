@@ -12,7 +12,8 @@ venv/
 .DS_Store
 
 # Generated scan outputs
-findings*.csv
+*.csv
+*.log
 
 # Coverage/test caches
 .pytest_cache/
