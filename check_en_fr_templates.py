@@ -727,8 +727,20 @@ def main(argv: Sequence[str]) -> int:
         print("--max-crawl-pages must be > 0", file=sys.stderr)
         return 2
 
+    if args.max_sitemaps <= 0:
+        print("--max-sitemaps must be > 0", file=sys.stderr)
+        return 2
+
+    if args.timeout <= 0:
+        print("--timeout must be > 0", file=sys.stderr)
+        return 2
+
     if not args.fr_prefix.strip():
         print("--fr-prefix must not be empty", file=sys.stderr)
+        return 2
+
+    if not args.csv_output.strip():
+        print("--csv-output must not be empty", file=sys.stderr)
         return 2
 
     try:
@@ -737,87 +749,94 @@ def main(argv: Sequence[str]) -> int:
         print(str(err), file=sys.stderr)
         return 2
 
-    print(f"Base URL: {base_url}")
-    print("Discovering pages from sitemap...")
-    sitemap_roots = discover_sitemap_roots(base_url, args.timeout, args.user_agent)
-    print(f"Sitemap roots to try: {len(sitemap_roots)}")
-    all_urls = crawl_sitemaps(
-        base_url=base_url,
-        timeout=args.timeout,
-        user_agent=args.user_agent,
-        max_sitemaps=args.max_sitemaps,
-        initial_sitemaps=sitemap_roots,
-    )
-
-    if not all_urls:
-        print("No URLs found via sitemap. Falling back to internal link crawl...")
-        all_urls = crawl_internal_links(
+    try:
+        print(f"Base URL: {base_url}")
+        print("Discovering pages from sitemap...")
+        sitemap_roots = discover_sitemap_roots(base_url, args.timeout, args.user_agent)
+        print(f"Sitemap roots to try: {len(sitemap_roots)}")
+        all_urls = crawl_sitemaps(
             base_url=base_url,
             timeout=args.timeout,
             user_agent=args.user_agent,
-            max_pages=args.max_crawl_pages,
+            max_sitemaps=args.max_sitemaps,
+            initial_sitemaps=sitemap_roots,
         )
 
-    effective_base_url = select_effective_base_url(base_url, all_urls)
-    if effective_base_url != base_url:
-        print(f"Using canonical host from discovered URLs: {effective_base_url}")
-
-    print(f"Discovered URL count: {len(all_urls)}")
-    candidates = filter_candidate_en_urls(effective_base_url, all_urls)
-    print(f"Candidate EN pages: {len(candidates)}")
-
-    samples = choose_samples(candidates, args.sample_size, args.seed)
-    if not samples:
-        print("No candidate EN pages found. Check sitemap availability.", file=sys.stderr)
-        return 2
-
-    print(f"Sampling {len(samples)} pages (seed={args.seed})")
-
-    results: List[CheckResult] = []
-    start_time = time.time()
-
-    for idx, en_url in enumerate(samples, start=1):
-        try:
-            fr_url = en_to_fr_url(effective_base_url, en_url, args.fr_prefix)
-            if not fr_url:
-                continue
-
-            print(f"[{idx}/{len(samples)}] Checking:")
-            print(f"  EN: {en_url}")
-            print(f"  FR: {fr_url}")
-
-            result = check_pair(
-                en_url=en_url,
-                fr_url=fr_url,
+        if not all_urls:
+            print("No URLs found via sitemap. Falling back to internal link crawl...")
+            all_urls = crawl_internal_links(
+                base_url=base_url,
                 timeout=args.timeout,
                 user_agent=args.user_agent,
-                threshold=args.threshold,
-            )
-            results.append(result)
-        except KeyboardInterrupt:
-            print("\nInterrupted by user.", file=sys.stderr)
-            break
-        except Exception as err:
-            results.append(
-                CheckResult(
-                    en_url=en_url,
-                    fr_url=en_to_fr_url(effective_base_url, en_url, args.fr_prefix) or "",
-                    en_status=None,
-                    fr_status=None,
-                    similarity=None,
-                    ok=False,
-                    finding_type="error",
-                    message=f"Unexpected error during pair check: {err}",
-                )
+                max_pages=args.max_crawl_pages,
             )
 
-    elapsed = time.time() - start_time
-    csv_written = write_csv_report(args.csv_output, results)
-    code = print_report(results)
-    if csv_written:
-        print(f"CSV output: {args.csv_output}")
-    print(f"\nCompleted in {elapsed:.1f}s")
-    return code
+        effective_base_url = select_effective_base_url(base_url, all_urls)
+        if effective_base_url != base_url:
+            print(f"Using canonical host from discovered URLs: {effective_base_url}")
+
+        print(f"Discovered URL count: {len(all_urls)}")
+        candidates = filter_candidate_en_urls(effective_base_url, all_urls)
+        print(f"Candidate EN pages: {len(candidates)}")
+
+        samples = choose_samples(candidates, args.sample_size, args.seed)
+        if not samples:
+            print("No candidate EN pages found. Check sitemap availability.", file=sys.stderr)
+            return 2
+
+        print(f"Sampling {len(samples)} pages (seed={args.seed})")
+
+        results: List[CheckResult] = []
+        start_time = time.time()
+
+        for idx, en_url in enumerate(samples, start=1):
+            try:
+                fr_url = en_to_fr_url(effective_base_url, en_url, args.fr_prefix)
+                if not fr_url:
+                    continue
+
+                print(f"[{idx}/{len(samples)}] Checking:")
+                print(f"  EN: {en_url}")
+                print(f"  FR: {fr_url}")
+
+                result = check_pair(
+                    en_url=en_url,
+                    fr_url=fr_url,
+                    timeout=args.timeout,
+                    user_agent=args.user_agent,
+                    threshold=args.threshold,
+                )
+                results.append(result)
+            except KeyboardInterrupt:
+                print("\nInterrupted by user.", file=sys.stderr)
+                break
+            except Exception as err:
+                results.append(
+                    CheckResult(
+                        en_url=en_url,
+                        fr_url=en_to_fr_url(effective_base_url, en_url, args.fr_prefix) or "",
+                        en_status=None,
+                        fr_status=None,
+                        similarity=None,
+                        ok=False,
+                        finding_type="error",
+                        message=f"Unexpected error during pair check: {err}",
+                    )
+                )
+
+        elapsed = time.time() - start_time
+        csv_written = write_csv_report(args.csv_output, results)
+        code = print_report(results)
+        if csv_written:
+            print(f"CSV output: {args.csv_output}")
+        print(f"\nCompleted in {elapsed:.1f}s")
+        return code
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.", file=sys.stderr)
+        return 130
+    except Exception as err:
+        print(f"Fatal error: {err}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

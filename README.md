@@ -1,6 +1,6 @@
 # frcheck
 
-Randomly checks that English and French pages on a website uses the same HTML template structure.
+Randomly checks that English and French pages on a website use the same HTML template structure.
 
 ## What It Does
 
@@ -19,6 +19,8 @@ Randomly checks that English and French pages on a website uses the same HTML te
 python3 check_en_fr_templates.py
 ```
 
+Note: the default `--base-url` is `https://example.com`, so for real checks you should pass your site URL.
+
 Example with a generic site:
 
 ```bash
@@ -29,10 +31,13 @@ Useful options:
 
 ```bash
 python3 check_en_fr_templates.py \
+  --base-url https://example.com \
+  --fr-prefix /fr \
   --sample-size 30 \
   --threshold 0.90 \
   --seed 42 \
   --timeout 20 \
+  --max-sitemaps 25 \
   --max-crawl-pages 200 \
   --csv-output findings.csv
 ```
@@ -40,7 +45,7 @@ python3 check_en_fr_templates.py \
 ## Exit Codes
 
 - `0`: all sampled pairs matched threshold
-- `1`: at least one mismatch or fetch error
+- `1`: at least one template mismatch, missing FR page, non-HTML pair, or fetch/runtime error
 - `2`: invalid input or no candidates found
 
 ## Console Summary
