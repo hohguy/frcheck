@@ -8,7 +8,7 @@ Randomly checks that English and French pages on a website use the same HTML tem
 - Also checks sitemap URLs listed in `robots.txt` and common sitemap filenames
 - Falls back to internal link crawling if no sitemap URLs are found
 - Samples random EN pages
-- Maps each EN path to the FR path by adding `/fr` prefix
+- Maps each EN path to the FR path by adding the configured FR prefix (default: `/fr`)
 - Compares EN vs FR HTML structure (tag sequence + stable attribute names)
 - Extracts each page's `<html lang>` value when available
 - Reports pass/fail based on a similarity threshold
@@ -38,6 +38,7 @@ python3 check_en_fr_templates.py \
   --threshold 0.90 \
   --seed 42 \
   --timeout 20 \
+  --delay 0.5 \
   --max-sitemaps 25 \
   --max-crawl-pages 200 \
   --csv-output findings.csv

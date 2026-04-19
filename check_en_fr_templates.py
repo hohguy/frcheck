@@ -35,6 +35,7 @@ from typing import Iterable, List, Optional, Sequence, Set, Tuple
 
 
 DEFAULT_USER_AGENT = "frcheck-template-scanner/1.0"
+_RESPONSE_SIZE_LIMIT = 10 * 1024 * 1024  # 10 MB
 DEFAULT_SITEMAP_CANDIDATES = (
     "/sitemap.xml",
     "/sitemap_index.xml",
@@ -125,7 +126,7 @@ class StructureParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         ltag = tag.lower()
         if self._ignore_stack:
-            if ltag == self._ignore_stack[-1]:
+            if ltag in self._IGNORE_TAGS:
                 self._ignore_stack.pop()
             return
 
@@ -186,9 +187,11 @@ def fetch_url(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = getattr(resp, "status", None) or resp.getcode()
-            body_bytes = resp.read()
-            charset = resp.headers.get_content_charset() or "utf-8"
+            body_bytes = resp.read(_RESPONSE_SIZE_LIMIT)
             content_type = resp.headers.get("Content-Type")
+            if len(body_bytes) == _RESPONSE_SIZE_LIMIT:
+                return None, "", f"TruncatedResponse: body exceeds {_RESPONSE_SIZE_LIMIT} bytes", content_type
+            charset = resp.headers.get_content_charset() or "utf-8"
             try:
                 body = body_bytes.decode(charset, errors="replace")
             except LookupError:
@@ -213,13 +216,6 @@ def fetch_url(
     except Exception as err:  # Defensive catch to keep batch runs alive.
         return None, "", f"UnexpectedError: {err}", None
 
-
-def fetch_xml(
-    url: str,
-    timeout: float,
-    user_agent: str,
-) -> Tuple[Optional[int], str, Optional[str], Optional[str]]:
-    return fetch_url(url, timeout, user_agent)
 
 
 def is_html_content_type(content_type: Optional[str]) -> bool:
@@ -293,17 +289,19 @@ def crawl_sitemaps(
     initial_sitemaps: Optional[Sequence[str]] = None,
 ) -> List[str]:
     """Recursively crawl sitemap index files and return discovered URLs."""
-    queue: List[str] = list(initial_sitemaps or [base_url + "/sitemap.xml"])
+    initial = list(initial_sitemaps or [base_url + "/sitemap.xml"])
+    queue: collections.deque[str] = collections.deque(initial)
+    queued: Set[str] = set(initial)
     seen: Set[str] = set()
     discovered_urls: List[str] = []
 
     while queue and len(seen) < max_sitemaps:
-        sitemap_url = queue.pop(0)
+        sitemap_url = queue.popleft()
         if sitemap_url in seen:
             continue
         seen.add(sitemap_url)
 
-        status, xml_text, _, _ = fetch_xml(sitemap_url, timeout, user_agent)
+        status, xml_text, _, _ = fetch_url(sitemap_url, timeout, user_agent)
         if not status or status >= 400:
             continue
 
@@ -314,8 +312,9 @@ def crawl_sitemaps(
         for loc in locs:
             lower = loc.lower()
             if lower.endswith(".xml"):
-                if loc not in seen and loc not in queue:
+                if loc not in seen and loc not in queued:
                     queue.append(loc)
+                    queued.add(loc)
             else:
                 discovered_urls.append(loc)
 
@@ -588,9 +587,11 @@ def path_depth(url: str) -> int:
     return len([p for p in path.split("/") if p])
 
 
-def filter_candidate_en_urls(base_url: str, urls: Iterable[str]) -> List[str]:
+def filter_candidate_en_urls(base_url: str, urls: Iterable[str], fr_prefix: str = "/fr") -> List[str]:
     parsed_base = urllib.parse.urlparse(base_url)
     netloc = parsed_base.netloc.lower()
+    normalized_prefix = fr_prefix if fr_prefix.startswith("/") else "/" + fr_prefix
+    normalized_prefix = normalized_prefix.rstrip("/") or "/fr"
 
     candidates: List[str] = []
     for raw_url in urls:
@@ -609,7 +610,7 @@ def filter_candidate_en_urls(base_url: str, urls: Iterable[str]) -> List[str]:
             continue
 
         # Skip FR pages; we only sample EN source pages.
-        if path == "/fr" or path.startswith("/fr/"):
+        if path == normalized_prefix or path.startswith(normalized_prefix + "/"):
             continue
 
         candidates.append(url)
@@ -877,6 +878,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Maximum pages to crawl when sitemap discovery fails (default: 150)",
     )
     parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.5,
+        help="Seconds to wait between page checks (default: 0.5)",
+    )
+    parser.add_argument(
         "--user-agent",
         default=DEFAULT_USER_AGENT,
         help=f"User-Agent header (default: {DEFAULT_USER_AGENT})",
@@ -916,6 +923,10 @@ def main(argv: Sequence[str]) -> int:
 
     if args.timeout <= 0:
         print("--timeout must be > 0", file=sys.stderr)
+        return 2
+
+    if args.delay < 0:
+        print("--delay must be >= 0", file=sys.stderr)
         return 2
 
     if not args.fr_prefix.strip():
@@ -959,7 +970,7 @@ def main(argv: Sequence[str]) -> int:
             print(f"Using canonical host from discovered URLs: {effective_base_url}")
 
         print(f"Discovered URL count: {len(all_urls)}")
-        candidates = filter_candidate_en_urls(effective_base_url, all_urls)
+        candidates = filter_candidate_en_urls(effective_base_url, all_urls, args.fr_prefix)
         print(f"Candidate EN pages: {len(candidates)}")
 
         samples = choose_samples(candidates, args.sample_size, args.seed)
@@ -991,10 +1002,13 @@ def main(argv: Sequence[str]) -> int:
                     threshold=args.threshold,
                 )
                 results.append(result)
+                if args.delay > 0 and idx < len(samples):
+                    time.sleep(args.delay)
             except KeyboardInterrupt:
                 print("\nInterrupted by user.", file=sys.stderr)
                 break
             except Exception as err:
+                _err_fr_url = en_to_fr_url(effective_base_url, en_url, args.fr_prefix) or ""
                 results.append(
                     CheckResult(
                         en_url=en_url,
@@ -1002,13 +1016,10 @@ def main(argv: Sequence[str]) -> int:
                         en_lang_effective="NA",
                         en_lang_expected=expected_lang_for_url(en_url, args.fr_prefix),
                         en_lang_match="NA",
-                        fr_url=en_to_fr_url(effective_base_url, en_url, args.fr_prefix) or "",
+                        fr_url=_err_fr_url,
                         fr_lang="NA",
                         fr_lang_effective="NA",
-                        fr_lang_expected=expected_lang_for_url(
-                            en_to_fr_url(effective_base_url, en_url, args.fr_prefix) or "",
-                            args.fr_prefix,
-                        ),
+                        fr_lang_expected=expected_lang_for_url(_err_fr_url, args.fr_prefix),
                         fr_lang_match="NA",
                         en_status=None,
                         fr_status=None,
