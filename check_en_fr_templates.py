@@ -47,8 +47,14 @@ DEFAULT_SITEMAP_CANDIDATES = (
 class CheckResult:
     en_url: str
     en_lang: str
+    en_lang_effective: str
+    en_lang_expected: str
+    en_lang_match: str
     fr_url: str
     fr_lang: str
+    fr_lang_effective: str
+    fr_lang_expected: str
+    fr_lang_match: str
     en_status: Optional[int]
     fr_status: Optional[int]
     similarity: Optional[float]
@@ -467,6 +473,107 @@ def extract_page_lang(html: str) -> str:
     return lang or "NA"
 
 
+def expected_lang_for_url(url: str, fr_prefix: str) -> str:
+    path = urllib.parse.urlparse(url).path or "/"
+    normalized_prefix = fr_prefix if fr_prefix.startswith("/") else "/" + fr_prefix
+    normalized_prefix = normalized_prefix.rstrip("/") or "/fr"
+    if path == normalized_prefix or path.startswith(normalized_prefix + "/"):
+        return "fr"
+    return "en"
+
+
+def lang_matches_expected(lang: str, expected: str) -> str:
+    if lang == "NA":
+        return "NA"
+    base = lang.split("-", 1)[0].split("_", 1)[0].lower()
+    return "yes" if base == expected.lower() else "no"
+
+
+def _normalize_url_for_hint_compare(url: str) -> str:
+    try:
+        return canonicalize_page_url(url)
+    except Exception:
+        return url.strip()
+
+
+def detect_current_url_lang_hint(html: str, current_url: str) -> str:
+    """Infer locale from alternate/switcher links that target the current URL."""
+    if not html:
+        return "NA"
+
+    target = _normalize_url_for_hint_compare(current_url)
+
+    patterns = [
+        # <link rel="alternate" hreflang="fr" href="...">
+        r"<link[^>]*\bhreflang\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))[^>]*\bhref\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))",
+        r"<link[^>]*\bhref\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))[^>]*\bhreflang\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))",
+        # language switcher anchors often use lang + href
+        r"<a[^>]*\blang\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))[^>]*\bhref\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))",
+        r"<a[^>]*\bhref\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))[^>]*\blang\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))",
+    ]
+
+    for pat in patterns:
+        for m in re.finditer(pat, html, flags=re.IGNORECASE):
+            groups = [g for g in m.groups() if g]
+            if len(groups) < 2:
+                continue
+
+            # For each pattern, we capture lang-ish and href-ish values together.
+            # Identify candidate URL by simple scheme/path heuristics.
+            lang_candidates = [g for g in groups if re.match(r"^[a-zA-Z]{2}(?:[-_][a-zA-Z]{2})?$", g)]
+            url_candidates = [g for g in groups if "/" in g or g.startswith("http")]
+            if not lang_candidates or not url_candidates:
+                continue
+
+            lang_raw = lang_candidates[0]
+            href_raw = url_candidates[0]
+            href_abs = urllib.parse.urljoin(current_url, href_raw)
+            if _normalize_url_for_hint_compare(href_abs) != target:
+                continue
+
+            base = lang_raw.split("-", 1)[0].split("_", 1)[0].lower()
+            if base in {"en", "fr"}:
+                return base
+
+    return "NA"
+
+
+def detect_relaxed_lang_hint(html: str, expected_lang: str) -> str:
+    """Infer locale from broader CMS hints even if link targets differ by slug/variant."""
+    if not html or expected_lang not in {"en", "fr"}:
+        return "NA"
+
+    if expected_lang == "fr":
+        if re.search(r"hreflang\s*=\s*[\"\']fr(?:[-_][a-zA-Z]{2})?[\"\']", html, re.IGNORECASE):
+            return "fr"
+        if re.search(r"\blang\s*=\s*[\"\']fr(?:[-_][a-zA-Z]{2})?[\"\']", html, re.IGNORECASE):
+            return "fr"
+        return "NA"
+
+    if re.search(r"hreflang\s*=\s*[\"\']en(?:[-_][a-zA-Z]{2})?[\"\']", html, re.IGNORECASE):
+        return "en"
+    if re.search(r"\blang\s*=\s*[\"\']en(?:[-_][a-zA-Z]{2})?[\"\']", html, re.IGNORECASE):
+        return "en"
+    return "NA"
+
+
+def effective_lang_for_page(raw_lang: str, html: str, page_url: str, expected_lang: str) -> str:
+    """Return best-effort effective locale (en/fr/NA) from raw lang + CMS hints."""
+    hint = detect_current_url_lang_hint(html, page_url)
+    if hint != "NA":
+        return hint
+
+    relaxed_hint = detect_relaxed_lang_hint(html, expected_lang)
+    if relaxed_hint != "NA":
+        return relaxed_hint
+
+    if raw_lang == "NA":
+        return "NA"
+
+    base = raw_lang.split("-", 1)[0].split("_", 1)[0].lower()
+    return base if base in {"en", "fr"} else "NA"
+
+
 def similarity_score(tokens_a: Sequence[str], tokens_b: Sequence[str]) -> float:
     if not tokens_a and not tokens_b:
         return 1.0
@@ -516,6 +623,7 @@ def filter_candidate_en_urls(base_url: str, urls: Iterable[str]) -> List[str]:
 def check_pair(
     en_url: str,
     fr_url: str,
+    fr_prefix: str,
     timeout: float,
     user_agent: str,
     threshold: float,
@@ -524,14 +632,26 @@ def check_pair(
     fr_status, fr_html, fr_error, fr_content_type = fetch_url(fr_url, timeout, user_agent)
     en_lang = extract_page_lang(en_html)
     fr_lang = extract_page_lang(fr_html)
+    en_lang_expected = expected_lang_for_url(en_url, fr_prefix)
+    fr_lang_expected = expected_lang_for_url(fr_url, fr_prefix)
+    en_lang_effective = effective_lang_for_page(en_lang, en_html, en_url, en_lang_expected)
+    fr_lang_effective = effective_lang_for_page(fr_lang, fr_html, fr_url, fr_lang_expected)
+    en_lang_match = lang_matches_expected(en_lang_effective, en_lang_expected)
+    fr_lang_match = lang_matches_expected(fr_lang_effective, fr_lang_expected)
 
     if not en_status or en_status >= 400:
         reason = en_error or f"status={en_status}"
         return CheckResult(
             en_url=en_url,
             en_lang=en_lang,
+            en_lang_effective=en_lang_effective,
+            en_lang_expected=en_lang_expected,
+            en_lang_match=en_lang_match,
             fr_url=fr_url,
             fr_lang=fr_lang,
+            fr_lang_effective=fr_lang_effective,
+            fr_lang_expected=fr_lang_expected,
+            fr_lang_match=fr_lang_match,
             en_status=en_status,
             fr_status=fr_status,
             similarity=None,
@@ -546,8 +666,14 @@ def check_pair(
         return CheckResult(
             en_url=en_url,
             en_lang=en_lang,
+            en_lang_effective=en_lang_effective,
+            en_lang_expected=en_lang_expected,
+            en_lang_match=en_lang_match,
             fr_url=fr_url,
             fr_lang=fr_lang,
+            fr_lang_effective=fr_lang_effective,
+            fr_lang_expected=fr_lang_expected,
+            fr_lang_match=fr_lang_match,
             en_status=en_status,
             fr_status=fr_status,
             similarity=None,
@@ -560,8 +686,14 @@ def check_pair(
         return CheckResult(
             en_url=en_url,
             en_lang=en_lang,
+            en_lang_effective=en_lang_effective,
+            en_lang_expected=en_lang_expected,
+            en_lang_match=en_lang_match,
             fr_url=fr_url,
             fr_lang=fr_lang,
+            fr_lang_effective=fr_lang_effective,
+            fr_lang_expected=fr_lang_expected,
+            fr_lang_match=fr_lang_match,
             en_status=en_status,
             fr_status=fr_status,
             similarity=None,
@@ -584,8 +716,14 @@ def check_pair(
     return CheckResult(
         en_url=en_url,
         en_lang=en_lang,
+        en_lang_effective=en_lang_effective,
+        en_lang_expected=en_lang_expected,
+        en_lang_match=en_lang_match,
         fr_url=fr_url,
         fr_lang=fr_lang,
+        fr_lang_effective=fr_lang_effective,
+        fr_lang_expected=fr_lang_expected,
+        fr_lang_match=fr_lang_match,
         en_status=en_status,
         fr_status=fr_status,
         similarity=score,
@@ -617,8 +755,14 @@ def write_csv_report(csv_output: str, results: Sequence[CheckResult]) -> bool:
                     "fr_status",
                     "en_url",
                     "en_lang",
+                    "en_lang_effective",
+                    "en_lang_expected",
+                    "en_lang_match",
                     "fr_url",
                     "fr_lang",
+                    "fr_lang_effective",
+                    "fr_lang_expected",
+                    "fr_lang_match",
                     "message",
                 ]
             )
@@ -632,8 +776,14 @@ def write_csv_report(csv_output: str, results: Sequence[CheckResult]) -> bool:
                         "" if r.fr_status is None else str(r.fr_status),
                         r.en_url,
                         r.en_lang,
+                        r.en_lang_effective,
+                        r.en_lang_expected,
+                        r.en_lang_match,
                         r.fr_url,
                         r.fr_lang,
+                        r.fr_lang_effective,
+                        r.fr_lang_expected,
+                        r.fr_lang_match,
                         r.message,
                     ]
                 )
@@ -835,6 +985,7 @@ def main(argv: Sequence[str]) -> int:
                 result = check_pair(
                     en_url=en_url,
                     fr_url=fr_url,
+                    fr_prefix=args.fr_prefix,
                     timeout=args.timeout,
                     user_agent=args.user_agent,
                     threshold=args.threshold,
@@ -848,8 +999,17 @@ def main(argv: Sequence[str]) -> int:
                     CheckResult(
                         en_url=en_url,
                         en_lang="NA",
+                        en_lang_effective="NA",
+                        en_lang_expected=expected_lang_for_url(en_url, args.fr_prefix),
+                        en_lang_match="NA",
                         fr_url=en_to_fr_url(effective_base_url, en_url, args.fr_prefix) or "",
                         fr_lang="NA",
+                        fr_lang_effective="NA",
+                        fr_lang_expected=expected_lang_for_url(
+                            en_to_fr_url(effective_base_url, en_url, args.fr_prefix) or "",
+                            args.fr_prefix,
+                        ),
+                        fr_lang_match="NA",
                         en_status=None,
                         fr_status=None,
                         similarity=None,

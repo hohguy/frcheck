@@ -74,8 +74,14 @@ Columns:
 - `fr_status`
 - `en_url`
 - `en_lang` (from `<html lang>`, otherwise `NA`)
+- `en_lang_effective` (best-effort locale from source + CMS hints)
+- `en_lang_expected` (inferred from URL locale: `en` or `fr`)
+- `en_lang_match` (`yes`, `no`, or `NA`)
 - `fr_url`
 - `fr_lang` (from `<html lang>`, otherwise `NA`)
+- `fr_lang_effective` (best-effort locale from source + CMS hints)
+- `fr_lang_expected` (inferred from URL locale: `en` or `fr`)
+- `fr_lang_match` (`yes`, `no`, or `NA`)
 - `message`
 
 ## Notes
