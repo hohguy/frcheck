@@ -10,6 +10,7 @@ Randomly checks that English and French pages on a website use the same HTML tem
 - Samples random EN pages
 - Maps each EN path to the FR path by adding `/fr` prefix
 - Compares EN vs FR HTML structure (tag sequence + stable attribute names)
+- Extracts each page's `<html lang>` value when available
 - Reports pass/fail based on a similarity threshold
 - Writes findings to a CSV file
 
@@ -72,7 +73,9 @@ Columns:
 - `en_status`
 - `fr_status`
 - `en_url`
+- `en_lang` (from `<html lang>`, otherwise `NA`)
 - `fr_url`
+- `fr_lang` (from `<html lang>`, otherwise `NA`)
 - `message`
 
 ## Notes

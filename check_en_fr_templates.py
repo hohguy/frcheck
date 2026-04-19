@@ -46,7 +46,9 @@ DEFAULT_SITEMAP_CANDIDATES = (
 @dataclass
 class CheckResult:
     en_url: str
+    en_lang: str
     fr_url: str
+    fr_lang: str
     en_status: Optional[int]
     fr_status: Optional[int]
     similarity: Optional[float]
@@ -448,6 +450,23 @@ def structural_tokens(html: str) -> List[str]:
     return parser.tokens
 
 
+def extract_page_lang(html: str) -> str:
+    """Extract <html lang="..."> value, returning NA when unavailable."""
+    if not html:
+        return "NA"
+
+    match = re.search(
+        r"<html[^>]*\blang\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))",
+        html,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return "NA"
+
+    lang = (match.group(1) or match.group(2) or match.group(3) or "").strip()
+    return lang or "NA"
+
+
 def similarity_score(tokens_a: Sequence[str], tokens_b: Sequence[str]) -> float:
     if not tokens_a and not tokens_b:
         return 1.0
@@ -503,12 +522,16 @@ def check_pair(
 ) -> CheckResult:
     en_status, en_html, en_error, en_content_type = fetch_url(en_url, timeout, user_agent)
     fr_status, fr_html, fr_error, fr_content_type = fetch_url(fr_url, timeout, user_agent)
+    en_lang = extract_page_lang(en_html)
+    fr_lang = extract_page_lang(fr_html)
 
     if not en_status or en_status >= 400:
         reason = en_error or f"status={en_status}"
         return CheckResult(
             en_url=en_url,
+            en_lang=en_lang,
             fr_url=fr_url,
+            fr_lang=fr_lang,
             en_status=en_status,
             fr_status=fr_status,
             similarity=None,
@@ -522,7 +545,9 @@ def check_pair(
         finding_type = "missing-fr-page" if fr_status == 404 and en_status and en_status < 400 else "error"
         return CheckResult(
             en_url=en_url,
+            en_lang=en_lang,
             fr_url=fr_url,
+            fr_lang=fr_lang,
             en_status=en_status,
             fr_status=fr_status,
             similarity=None,
@@ -534,7 +559,9 @@ def check_pair(
     if not is_html_content_type(en_content_type) or not is_html_content_type(fr_content_type):
         return CheckResult(
             en_url=en_url,
+            en_lang=en_lang,
             fr_url=fr_url,
+            fr_lang=fr_lang,
             en_status=en_status,
             fr_status=fr_status,
             similarity=None,
@@ -556,7 +583,9 @@ def check_pair(
 
     return CheckResult(
         en_url=en_url,
+        en_lang=en_lang,
         fr_url=fr_url,
+        fr_lang=fr_lang,
         en_status=en_status,
         fr_status=fr_status,
         similarity=score,
@@ -587,7 +616,9 @@ def write_csv_report(csv_output: str, results: Sequence[CheckResult]) -> bool:
                     "en_status",
                     "fr_status",
                     "en_url",
+                    "en_lang",
                     "fr_url",
+                    "fr_lang",
                     "message",
                 ]
             )
@@ -600,7 +631,9 @@ def write_csv_report(csv_output: str, results: Sequence[CheckResult]) -> bool:
                         "" if r.en_status is None else str(r.en_status),
                         "" if r.fr_status is None else str(r.fr_status),
                         r.en_url,
+                        r.en_lang,
                         r.fr_url,
+                        r.fr_lang,
                         r.message,
                     ]
                 )
@@ -814,7 +847,9 @@ def main(argv: Sequence[str]) -> int:
                 results.append(
                     CheckResult(
                         en_url=en_url,
+                        en_lang="NA",
                         fr_url=en_to_fr_url(effective_base_url, en_url, args.fr_prefix) or "",
+                        fr_lang="NA",
                         en_status=None,
                         fr_status=None,
                         similarity=None,
