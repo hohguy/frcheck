@@ -64,7 +64,7 @@ The report includes:
 
 ## CSV Output
 
-By default, the script writes `findings.csv` in the current working directory.
+By default, the script writes `findings.csv` and `findings.log` in the current working directory. The log mirrors everything printed to the console during the run. Both files share the same stem as `--csv-output`.
 
 Columns:
 
@@ -89,4 +89,6 @@ Columns:
 
 - This is a structural comparison, not text-content comparison.
 - Some pages can still fail due to intentional template differences or unavailable FR equivalents.
-- If your site uses a different EN/FR URL scheme, update `en_to_fr_url()` in `check_en_fr_templates.py`.
+- FR URLs are resolved from `<link rel="alternate" hreflang="fr">` tags in the EN page when present, so translated slugs (e.g. `/parking` → `/fr/stationnement/`) are handled automatically. Path-prefix mapping is used as a fallback when no hreflang is found.
+- If your site uses a different EN/FR URL scheme and has no hreflang tags, update `en_to_fr_url()` in `check_en_fr_templates.py`.
+- Lang detection reads the server-rendered HTML only. Pages that set `<html lang>` via JavaScript will show the pre-JS value.

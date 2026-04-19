@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import collections
 import csv
+import os
 import random
 import re
 import socket
@@ -621,6 +622,35 @@ def filter_candidate_en_urls(base_url: str, urls: Iterable[str], fr_prefix: str 
     return candidates
 
 
+def extract_hreflang_url(html: str, lang_prefix: str) -> Optional[str]:
+    """Return href from <link rel="alternate" hreflang="lang_prefix[...]">.
+
+    Prefers tags that include rel="alternate"; falls back to any hreflang match
+    so that non-standard CMS markup is still handled.
+    """
+    alternate: Optional[str] = None
+    fallback: Optional[str] = None
+
+    for m in re.finditer(r"<link\b([^>]*)>", html, re.IGNORECASE):
+        attrs = m.group(1)
+        lang_m = re.search(r'\bhreflang\s*=\s*["\']?([a-zA-Z]{2}(?:[-_][a-zA-Z]{2})?)["\']?', attrs, re.IGNORECASE)
+        if not lang_m or not lang_m.group(1).lower().startswith(lang_prefix.lower()):
+            continue
+        href_m = re.search(r'\bhref\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|(\S+))', attrs, re.IGNORECASE)
+        if not href_m:
+            continue
+        href = (href_m.group(1) or href_m.group(2) or href_m.group(3)).strip()
+        rel_m = re.search(r'\brel\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|(\S+))', attrs, re.IGNORECASE)
+        rel = (rel_m and (rel_m.group(1) or rel_m.group(2) or rel_m.group(3)) or "").lower()
+        if "alternate" in rel.split():
+            alternate = href
+            break
+        if fallback is None:
+            fallback = href
+
+    return alternate or fallback
+
+
 def check_pair(
     en_url: str,
     fr_url: str,
@@ -630,11 +660,22 @@ def check_pair(
     threshold: float,
 ) -> CheckResult:
     en_status, en_html, en_error, en_content_type = fetch_url(en_url, timeout, user_agent)
+
+    # Resolve the real FR URL from hreflang before fetching, falling back to
+    # the path-mapped fr_url when hreflang is absent.
+    fr_from_hreflang = False
+    if en_html:
+        discovered = extract_hreflang_url(en_html, "fr")
+        if discovered:
+            fr_url = urllib.parse.urljoin(en_url, discovered)
+            fr_from_hreflang = True
+
     fr_status, fr_html, fr_error, fr_content_type = fetch_url(fr_url, timeout, user_agent)
+
     en_lang = extract_page_lang(en_html)
     fr_lang = extract_page_lang(fr_html)
     en_lang_expected = expected_lang_for_url(en_url, fr_prefix)
-    fr_lang_expected = expected_lang_for_url(fr_url, fr_prefix)
+    fr_lang_expected = "fr" if fr_from_hreflang else expected_lang_for_url(fr_url, fr_prefix)
     en_lang_effective = effective_lang_for_page(en_lang, en_html, en_url, en_lang_expected)
     fr_lang_effective = effective_lang_for_page(fr_lang, fr_html, fr_url, fr_lang_expected)
     en_lang_match = lang_matches_expected(en_lang_effective, en_lang_expected)
@@ -896,6 +937,21 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+class _Tee:
+    """Write to multiple streams simultaneously."""
+
+    def __init__(self, *streams) -> None:
+        self._streams = streams
+
+    def write(self, data: str) -> None:
+        for s in self._streams:
+            s.write(data)
+
+    def flush(self) -> None:
+        for s in self._streams:
+            s.flush()
+
+
 def main(argv: Sequence[str]) -> int:
     try:
         args = parse_args(argv)
@@ -943,6 +999,11 @@ def main(argv: Sequence[str]) -> int:
         print(str(err), file=sys.stderr)
         return 2
 
+    log_path = os.path.splitext(args.csv_output)[0] + ".log"
+    _log_fh = open(log_path, "w", encoding="utf-8")  # noqa: SIM115
+    _orig_stdout = sys.stdout
+    sys.stdout = _Tee(_orig_stdout, _log_fh)
+
     try:
         print(f"Base URL: {base_url}")
         print("Discovering pages from sitemap...")
@@ -989,9 +1050,7 @@ def main(argv: Sequence[str]) -> int:
                 if not fr_url:
                     continue
 
-                print(f"[{idx}/{len(samples)}] Checking:")
-                print(f"  EN: {en_url}")
-                print(f"  FR: {fr_url}")
+                print(f"[{idx}/{len(samples)}] Checking EN: {en_url}")
 
                 result = check_pair(
                     en_url=en_url,
@@ -1002,6 +1061,9 @@ def main(argv: Sequence[str]) -> int:
                     threshold=args.threshold,
                 )
                 results.append(result)
+                print(f"  EN: {result.en_url}")
+                print(f"  FR: {result.fr_url}")
+                print(f"  [{'PASS' if result.ok else 'FAIL'}] {result.message}")
                 if args.delay > 0 and idx < len(samples):
                     time.sleep(args.delay)
             except KeyboardInterrupt:
@@ -1035,6 +1097,7 @@ def main(argv: Sequence[str]) -> int:
         code = print_report(results)
         if csv_written:
             print(f"CSV output: {args.csv_output}")
+            print(f"Log output: {log_path}")
         print(f"\nCompleted in {elapsed:.1f}s")
         return code
     except KeyboardInterrupt:
@@ -1043,6 +1106,9 @@ def main(argv: Sequence[str]) -> int:
     except Exception as err:
         print(f"Fatal error: {err}", file=sys.stderr)
         return 2
+    finally:
+        sys.stdout = _orig_stdout
+        _log_fh.close()
 
 
 if __name__ == "__main__":
