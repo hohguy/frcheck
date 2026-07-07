@@ -1,5 +1,9 @@
 # frcheck
 
+[![CI](https://github.com/hohguy/frcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/hohguy/frcheck/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+
 Randomly checks that English and French pages on a website use the same HTML template structure.
 
 ## What It Does
@@ -13,6 +17,10 @@ Randomly checks that English and French pages on a website use the same HTML tem
 - Extracts each page's `<html lang>` value when available
 - Reports pass/fail based on a similarity threshold
 - Writes findings to a CSV file
+
+## Requirements
+
+- **Python 3.8+** — standard library only, so there's **nothing to `pip install`**. Just download `check_en_fr_templates.py` and run it. (CI validates on Python 3.13.)
 
 ## Usage
 
